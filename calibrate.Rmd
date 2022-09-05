@@ -1,0 +1,116 @@
+# calibrate probabilities
+
+next: build more functions
+
+```{r}
+library(tidyverse)
+library(lubridate)
+source("calibrate_functions.R")
+source("../ratings/pred_next_functions.R")
+```
+
+```{r}
+games <- read_rds("../scoresway/rds/games.rds")
+```
+
+```{r}
+curdir <- getwd()
+setwd("../ratings")
+pp <- make_all_preds(games, hours_back = 72, days_forward = 0)
+setwd(curdir)
+write_rds(pp, "pp.rds")
+pp
+```
+
+
+include only games since last rating (or use that as selection criterion). Make a table of `country_lc` and last rate dates.
+
+```{r}
+tibble(posts = list.files(path = "../ratings", pattern = "_post.rds", full.names = TRUE)) %>% 
+  mutate(mt = file.mtime(posts)) %>% 
+  filter(!str_detect(posts, "pre_post.rds$")) %>% 
+  extract(posts, into = "country_lc", regex = "ratings/(.*)_post") -> rating_mods
+rating_mods
+```
+
+
+get ones with scores
+
+```{r}
+pp %>% 
+  left_join(rating_mods) %>% 
+  filter(str_detect(score, "-")) %>%
+  filter(time_stamp > mt) %>% 
+  select(score:p0) %>% 
+  rename(x1 = p2, x2 = p1, x3 = p0) %>% 
+  separate(score, into = c("s1", "s2"), sep = " - ", convert = TRUE) %>% 
+  mutate(obs = case_when(
+    s1 > s2  ~ 1,
+    s1 == s2 ~ 2,
+    s1 < s2  ~ 3
+  )) -> d
+d
+```
+
+```{r}
+d %>% select(starts_with("x")) -> p
+d %>% pull(obs) -> obs
+```
+
+check the calcs
+
+```{r}
+oll <- loglik(obs, p)
+oll
+```
+
+```{r}
+vv <- sim_dist(p, 1000)
+```
+
+```{r}
+ggplot(tibble(vv), aes(x = vv)) + geom_histogram(bins = 10) +
+  geom_vline( xintercept = oll, colour = "red")
+```
+
+
+P-values
+
+```{r}
+run_sim(p, obs, n_sim = 1000)
+```
+
+investigate further
+
+
+```{r}
+tibble(p, obs) %>% pivot_longer(-obs) %>% 
+  mutate(prob_of = parse_number(name)) %>% 
+  mutate(y = ifelse(obs == prob_of, 1, 0)) %>% 
+  select(y, value) -> oe
+oe
+```
+
+
+break up prob into intervals and compare obs and exp within
+
+```{r}
+q <-  quantile(oe$value, seq(0, 1, 0.125))
+oe %>% mutate(intvl = cut(value, q)) %>% 
+  nest_by(intvl) %>% 
+  mutate(n = nrow(data), obs = sum(data$y), exp = sum(data$value)) %>% 
+  mutate(res = (obs - exp) / sqrt(exp)) %>% 
+  select(-data)
+```
+
+
+
+
+```{r}
+lo <- 0.1
+hi <- 0.2
+oe %>% filter(between(value, lo, hi)) %>%
+  summarize(n = n(), obs = sum(y), exp = sum(value)) %>% 
+  mutate(stat = (obs - exp)^2 / exp)
+```
+
